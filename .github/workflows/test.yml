@@ -1,0 +1,17 @@
+name: Test Action for Local testing
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test local action
+        uses: ./ # <-- referens till local action
+        with:
+          filepath: test.xml
+          xpath: "//client/endpoint/@address"
+          replace: "UTVP-EVO-T01.UTV.SOKIGO.COM"
+          newvalue: "FOO"
