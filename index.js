@@ -52,12 +52,10 @@ function writeFile(filePath, xpathString, replaceString, newValueString) {
         if (newValueString.length == 0) {
           node.textContent = replaceString;
         } else {
-          console.log(node.textContent, replaceString, newValueString);
           node.textContent = node.textContent.replace(
             replaceString,
             newValueString
           );
-          console.log(node.textContent);
         }
       }
     }
