@@ -1,17 +1,19 @@
 {
   "name": "xml-replace-action",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "ncc build index.js -o dist"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@actions/core": "^1.2.6",
-    "xmldom": "^0.4.0",
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.1",
+    "xmldom": "^0.6.0",
     "xpath": "^0.0.32"
   }
 }

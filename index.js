@@ -1,8 +1,7 @@
-const core = require("@actions/core");
-const xpath = require("xpath");
-const DOMParser = require("xmldom").DOMParser;
-const XMLSerializer = require("xmldom").XMLSerializer;
-const fs = require("fs");
+import * as core from "@actions/core";
+import * as fs from "fs";
+import { DOMParser, XMLSerializer } from "xmldom";
+import * as xpath from "xpath";
 
 const XML_NODETYPE = {
   ELEMENT_NODE: 1,
@@ -53,10 +52,12 @@ function writeFile(filePath, xpathString, replaceString, newValueString) {
         if (newValueString.length == 0) {
           node.textContent = replaceString;
         } else {
+          console.log(node.textContent, replaceString, newValueString);
           node.textContent = node.textContent.replace(
             replaceString,
             newValueString
           );
+          console.log(node.textContent);
         }
       }
     }
