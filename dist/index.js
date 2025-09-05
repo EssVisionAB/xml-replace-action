@@ -34754,47 +34754,80 @@ const XML_NODETYPE = {
 };
 
 try {
-  let filePath = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("filepath", { required: true });
-  let xpathString = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("xpath", { required: true });
-  let replaceString = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("replace", { required: true });
-  let newValueString = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("newvalue");
+  const filePath = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("filepath", { required: true });
+  const xpathString = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("xpath", { required: true });
+  const replaceString = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("replace");
+  const newValueString = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("newvalue");
+  const operation = _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("operation") || "replace";
 
-  writeFile(filePath, xpathString, replaceString, newValueString);
-} catch (error) {
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed(error.message);
-}
-
-function writeFile(filePath, xpathString, replaceString, newValueString) {
   const content = fs__WEBPACK_IMPORTED_MODULE_1__.readFileSync(filePath, "utf8");
   const document = new xmldom__WEBPACK_IMPORTED_MODULE_2__/* .DOMParser */ .S().parseFromString(content);
-
   const nodes = xpath__WEBPACK_IMPORTED_MODULE_3__.select(xpathString, document);
-  if (nodes.length === 0) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed("No matching xml nodes found");
-  } else {
-    for (const node of nodes) {
-      if (
-        node.nodeType === XML_NODETYPE.ELEMENT_NODE &&
-        replaceString !== null
-      ) {
-        const newNode = new xmldom__WEBPACK_IMPORTED_MODULE_2__/* .DOMParser */ .S().parseFromString(replaceString);
-        node.parentNode.replaceChild(newNode, node);
-      }
 
-      if (replaceString === null) {
-        node.parentNode.removeChild(node);
-      } else {
-        if (newValueString.length == 0) {
-          node.textContent = replaceString;
-        } else {
-          node.textContent = node.textContent.replace(
-            replaceString,
-            newValueString
-          );
+  if (nodes.length === 0) {
+    _actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed("No matching XML nodes found");
+  } else {
+    switch (operation) {
+      case "read":
+        const node = nodes[0];
+        const value =
+          node.nodeType === XML_NODETYPE.ATTRIBUTE_NODE
+            ? node.nodeValue
+            : node.textContent;
+        _actions_core__WEBPACK_IMPORTED_MODULE_0__.setOutput("value", value);
+        break;
+
+      case "delete":
+        for (const node of nodes) {
+          if (node.nodeType === XML_NODETYPE.ATTRIBUTE_NODE) {
+            const ownerElement = node.ownerElement;
+            if (ownerElement) {
+              ownerElement.removeAttribute(node.nodeName);
+            }
+          } else if (node.parentNode) {
+            node.parentNode.removeChild(node);
+          }
         }
-      }
+        fs__WEBPACK_IMPORTED_MODULE_1__.writeFileSync(
+          filePath,
+          new xmldom__WEBPACK_IMPORTED_MODULE_2__.XMLSerializer().serializeToString(document)
+        );
+        break;
+
+      case "replace":
+      default:
+        for (const node of nodes) {
+          if (
+            node.nodeType === XML_NODETYPE.ELEMENT_NODE &&
+            replaceString !== null
+          ) {
+            const newNode = new xmldom__WEBPACK_IMPORTED_MODULE_2__/* .DOMParser */ .S().parseFromString(
+              replaceString
+            ).documentElement;
+            node.parentNode.replaceChild(newNode, node);
+          }
+
+          if (replaceString === null) {
+            node.parentNode.removeChild(node);
+          } else {
+            if (!newValueString || newValueString.length === 0) {
+              node.textContent = replaceString;
+            } else {
+              node.textContent = node.textContent.replace(
+                replaceString,
+                newValueString
+              );
+            }
+          }
+        }
+        fs__WEBPACK_IMPORTED_MODULE_1__.writeFileSync(
+          filePath,
+          new xmldom__WEBPACK_IMPORTED_MODULE_2__.XMLSerializer().serializeToString(document)
+        );
+        break;
     }
-    fs__WEBPACK_IMPORTED_MODULE_1__.writeFileSync(filePath, new xmldom__WEBPACK_IMPORTED_MODULE_2__.XMLSerializer().serializeToString(document));
   }
+} catch (error) {
+  _actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed(error instanceof Error ? error.message : String(error));
 }
 
