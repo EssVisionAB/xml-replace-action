@@ -19,46 +19,79 @@ const XML_NODETYPE = {
 };
 
 try {
-  let filePath = core.getInput("filepath", { required: true });
-  let xpathString = core.getInput("xpath", { required: true });
-  let replaceString = core.getInput("replace", { required: true });
-  let newValueString = core.getInput("newvalue");
+  const filePath = core.getInput("filepath", { required: true });
+  const xpathString = core.getInput("xpath", { required: true });
+  const replaceString = core.getInput("replace");
+  const newValueString = core.getInput("newvalue");
+  const operation = core.getInput("operation") || "replace";
 
-  writeFile(filePath, xpathString, replaceString, newValueString);
-} catch (error) {
-  core.setFailed(error.message);
-}
-
-function writeFile(filePath, xpathString, replaceString, newValueString) {
   const content = fs.readFileSync(filePath, "utf8");
   const document = new DOMParser().parseFromString(content);
-
   const nodes = xpath.select(xpathString, document);
-  if (nodes.length === 0) {
-    core.setFailed("No matching xml nodes found");
-  } else {
-    for (const node of nodes) {
-      if (
-        node.nodeType === XML_NODETYPE.ELEMENT_NODE &&
-        replaceString !== null
-      ) {
-        const newNode = new DOMParser().parseFromString(replaceString);
-        node.parentNode.replaceChild(newNode, node);
-      }
 
-      if (replaceString === null) {
-        node.parentNode.removeChild(node);
-      } else {
-        if (newValueString.length == 0) {
-          node.textContent = replaceString;
-        } else {
-          node.textContent = node.textContent.replace(
-            replaceString,
-            newValueString
-          );
+  if (nodes.length === 0) {
+    core.setFailed("No matching XML nodes found");
+  } else {
+    switch (operation) {
+      case "read":
+        const node = nodes[0];
+        const value =
+          node.nodeType === XML_NODETYPE.ATTRIBUTE_NODE
+            ? node.nodeValue
+            : node.textContent;
+        core.setOutput("value", value);
+        break;
+
+      case "delete":
+        for (const node of nodes) {
+          if (node.nodeType === XML_NODETYPE.ATTRIBUTE_NODE) {
+            const ownerElement = node.ownerElement;
+            if (ownerElement) {
+              ownerElement.removeAttribute(node.nodeName);
+            }
+          } else if (node.parentNode) {
+            node.parentNode.removeChild(node);
+          }
         }
-      }
+        fs.writeFileSync(
+          filePath,
+          new XMLSerializer().serializeToString(document)
+        );
+        break;
+
+      case "replace":
+      default:
+        for (const node of nodes) {
+          if (
+            node.nodeType === XML_NODETYPE.ELEMENT_NODE &&
+            replaceString !== null
+          ) {
+            const newNode = new DOMParser().parseFromString(
+              replaceString
+            ).documentElement;
+            node.parentNode.replaceChild(newNode, node);
+          }
+
+          if (replaceString === null) {
+            node.parentNode.removeChild(node);
+          } else {
+            if (!newValueString || newValueString.length === 0) {
+              node.textContent = replaceString;
+            } else {
+              node.textContent = node.textContent.replace(
+                replaceString,
+                newValueString
+              );
+            }
+          }
+        }
+        fs.writeFileSync(
+          filePath,
+          new XMLSerializer().serializeToString(document)
+        );
+        break;
     }
-    fs.writeFileSync(filePath, new XMLSerializer().serializeToString(document));
   }
+} catch (error) {
+  core.setFailed(error instanceof Error ? error.message : String(error));
 }
