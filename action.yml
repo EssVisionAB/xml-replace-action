@@ -9,9 +9,23 @@ inputs:
     required: true
   replace:
     description: "value to replace with"
-    required: true
+    required: false
   newvalue:
     description: "substring in value to replace (optional)"
+    required: false
+  operation:
+    description: |
+      Operation to perform: 
+      - 'replace' (default): Replace text content or full node
+      - 'read': Output current value of the selected node/attribute
+      - 'delete': Remove the selected node or attribute
+    required: false
+    default: "replace"
+
+outputs:
+  value:
+    description: "value returned from read operation"
+
 runs:
   using: "node20"
   main: "dist/index.js"
