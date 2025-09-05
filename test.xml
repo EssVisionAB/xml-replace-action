@@ -1,70 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.serviceModel>
     <client>
-      <endpoint name="Evolution.Client.Services.RepositoryServiceProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:9932/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" behaviorConfiguration="maxItemsBehavior" contract="Evolution.WCF.Contracts.IRepositoryService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="Administrator.Infrastructure.Library.Services.LoginManager.ProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:9933/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" behaviorConfiguration="" contract="Evolution.WCF.Contracts.IIdentityService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <!--log reciever client endpoint-->
-      <endpoint name="NetTcpBinding_ILogReciever" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:9916/Services" contract="EntLibContrib.WCF.Contract.ILogReciever">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="ActivityAreaEditor.Proxies.ActivityAreaServiceClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:9934/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding_2" behaviorConfiguration="maxItemsBehavior" contract="Evolution.WCF.Contracts.IActivityAreaPlanService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="Administrator.Infrastructure.Module.Proxies.UtilityMethodsAdminProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:9935/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding_2" behaviorConfiguration="maxItemsBehavior" contract="Evolution.WCF.Contracts.IUtilityMethodsAdmin">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="Administrator.Infrastructure.Module.Proxies.ViewTemplateServiceClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:8847/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" behaviorConfiguration="" contract="Administrator.Infrastructure.Module.Services.IViewTemplateService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <!--WI # 2637-->
-      <endpoint name="Administrator.Infrastructure.Library.ConfigurationStore.ProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:9923/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" contract="Administrator.Infrastructure.Library.IConfigurationStore">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="Administrator.Infrastructure.Module.Proxies.Integration2c8ProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:3570/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding_2" behaviorConfiguration="maxItemsBehavior" contract="Integration2c8Lib.IDataService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="Administrator.Infrastructure.Module.Proxies.SignProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:3580/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" behaviorConfiguration="maxItemsBehavior" contract="SignaturesLib.IDataService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-      <endpoint name="Administrator.Infrastructure.Module.Proxies.ElectedProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:3510/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding" behaviorConfiguration="maxItemsBehavior" contract="Elected.DomainModel.IDataService">
-		  <identity>
-			  <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-		  </identity>
-      </endpoint>
-	  <endpoint name="Administrator.Infrastructure.Module.Proxies.NotifierAdminProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:4000/Services" binding="netTcpBinding" bindingConfiguration="NetTcpMaxTransportBinding_2" behaviorConfiguration="maxItemsBehavior" contract="Evolution.WCF.Contracts.INotifierAdmin">
-			<identity>
-        <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-			</identity>
-		</endpoint>
-		<endpoint name="PublishSubscribe.Contracts.NotifyEventsProxyClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:8833/EventService" contract="PublishSubscribe.Contracts.INotifyEvents" binding="netTcpBinding" bindingConfiguration="ReliableTCP_Publisher">
-			<identity>
-        <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-			</identity>
-		</endpoint>
-		<endpoint name="PublishSubscribe.ServiceModel.PersistentSubscriptionServiceClient" address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:8834/PersistentSubscriptionManager" contract="PublishSubscribe.ServiceModel.Contracts.IPersistentSubscriptionService" binding="netTcpBinding" bindingConfiguration="ReliableTransactionalTCP_Subscriber_Client">
-			<identity>
-        <userPrincipalName value="UTV_SOKIGO\svc_sprint" />
-			</identity>
-		</endpoint>
+      <endpoint name="TestEndpoint"
+                address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:12345/Service"
+                contract="Test.Contract.IService" />
     </client>
+  </system.serviceModel>
+</configuration>

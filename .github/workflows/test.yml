@@ -5,13 +5,92 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test local action
-        uses: ./ # <-- referens till local action
+      #
+      # show initial file
+      #
+      - name: Show initial test.xml
+        run: cat test.xml
+      #
+      # Replace del av @address-sträng
+      #
+      - name: Test 1 – Replace part of attribute value
+        uses: ./
         with:
           filepath: test.xml
           xpath: "//client/endpoint/@address"
-          replace: "UTVP-EVO-T01.UTV.SOKIGO.COM"
-          newvalue: "FOO"
+          replace: "UTVP-EVO-T01"
+          newvalue: "LOCAL-ENV"
+
+      #
+      # show result of file
+      #
+      - name: Show test 1 result of test.xml
+        run: cat test.xml
+
+      #
+      # Replace hela noden
+      #
+      - name: Test 2 – Replace full XML node
+        uses: ./
+        with:
+          filepath: test.xml
+          xpath: "//client/endpoint/@address"
+          replace: "foobar.com"
+          operation: replace
+
+      #
+      # show result of file
+      #
+      - name: Show test 2 result of test.xml
+        run: cat test.xml
+
+      #
+      # Läs nuvarande värde av @address
+      #
+      - name: Test 3 – Read attribute
+        id: readtest
+        uses: ./
+        with:
+          filepath: test.xml
+          xpath: "//client/endpoint/@address"
+          operation: read
+
+      - name: Show read value
+        run: >
+          echo "Read value: ${{ steps.readtest.outputs.value }}"
+
+      #
+      # Ta bort attributet @address
+      #
+      - name: Test 4 – Delete attribute
+        uses: ./
+        with:
+          filepath: test.xml
+          xpath: "//client/endpoint/@address"
+          operation: delete
+
+      #
+      # Visa slutresultatet
+      #
+      - name: Show final test.xml
+        run: cat test.xml
+
+      #
+      # Ta bort attributet <endpoint>
+      #
+      - name: Test 5 – Delete tag
+        uses: ./
+        with:
+          filepath: test.xml
+          xpath: "//client/endpoint"
+          operation: delete
+
+      #
+      # Visa slutresultatet
+      #
+      - name: Show final test.xml
+        run: cat test.xml
