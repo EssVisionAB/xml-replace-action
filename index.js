@@ -1,6 +1,6 @@
 import * as core from "@actions/core";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import * as fs from "fs";
-import { DOMParser, XMLSerializer } from "xmldom";
 import * as xpath from "xpath";
 
 const XML_NODETYPE = {
@@ -21,13 +21,22 @@ const XML_NODETYPE = {
 try {
   const filePath = core.getInput("filepath", { required: true });
   const xpathString = core.getInput("xpath", { required: true });
+  const nameSpaces = core.getInput("namespaces");
   const replaceString = core.getInput("replace");
   const newValueString = core.getInput("newvalue");
   const operation = core.getInput("operation") || "replace";
 
   const content = fs.readFileSync(filePath, "utf8");
   const document = new DOMParser().parseFromString(content);
-  const nodes = xpath.select(xpathString, document);
+
+  let nodes = [];
+  if (nameSpaces) {
+    const ns = JSON.parse(nameSpaces);
+    const select = xpath.useNamespaces(ns);
+    nodes = select(xpathString, document);
+  } else {
+    nodes = xpath.select(xpathString, document);
+  }
 
   if (nodes.length === 0) {
     core.setFailed("No matching XML nodes found");
