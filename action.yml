@@ -21,6 +21,11 @@ inputs:
       - 'delete': Remove the selected node or attribute
     required: false
     default: "replace"
+  namespaces:
+    description: |
+      Array of namespaces:
+      { "foo": "https://foo" }
+    required: false
 
 outputs:
   value:

@@ -69,3 +69,27 @@ Simple GitHub action to replace, read or delete values or substrings of values i
     xpath: "//client/endpoint"
     operation: delete
 ```
+
+### Sample – delete node or attribute inside namespace
+
+```yaml
+- name: Delete address attribute
+  uses: EssVisionAB/xml-replace-action@v2
+  with:
+    filepath: "config-file.xml"
+    xpath: "//foo:client/foo:endpoint/@address"
+    namespaces: |
+      { "foo": "http:/foo" }
+    operation: delete
+```
+
+```yaml
+- name: Delete endpoint node
+  uses: EssVisionAB/xml-replace-action@v2
+  with:
+    filepath: "config-file.xml"
+    xpath: "//foo:client/foo:endpoint"
+    namespaces: |
+      { "foo": "http:/foo" }
+    operation: delete
+```

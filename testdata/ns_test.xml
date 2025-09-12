@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration xmlns="http://foobar">
+  <system.serviceModel>
+    <client>
+      <endpoint name="TestEndpoint"
+                address="net.tcp://UTVP-EVO-T01.UTV.SOKIGO.COM:12345/Service"
+                contract="Test.Contract.IService" />
+    </client>
+  </system.serviceModel>
+</configuration>
