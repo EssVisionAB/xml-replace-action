@@ -25,6 +25,7 @@ try {
   const replaceString = core.getInput("replace");
   const newValueString = core.getInput("newvalue");
   const operation = core.getInput("operation") || "replace";
+  const failOnWarning = core.getInput("failonwarning");
 
   const content = fs.readFileSync(filePath, "utf8");
   const document = new DOMParser().parseFromString(content);
@@ -39,7 +40,12 @@ try {
   }
 
   if (nodes.length === 0) {
-    core.setFailed("No matching XML nodes found");
+    const faultMessage = "No matching XML nodes found";
+    if (failOnWarning) {
+      core.setFailed(faultMessage);
+    } else {
+      core.warning(faultMessage);
+    }
   } else {
     switch (operation) {
       case "read":

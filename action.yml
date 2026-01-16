@@ -26,6 +26,9 @@ inputs:
       Array of namespaces:
       { "foo": "https://foo" }
     required: false
+  failonwarning:
+    description: "If true, the action will fail on warnings such as no matching nodes found"
+    required: false
 
 outputs:
   value:

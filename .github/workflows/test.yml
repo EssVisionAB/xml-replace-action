@@ -131,3 +131,36 @@ jobs:
       #
       - name: Show Test 7 result
         run: cat testdata/ns_test.xml
+
+      #
+      # Försök ta bort en icke-existerande nod – ska ge varning, inte fel
+      #
+      - name: Test 8 – Delete non-existent node (expect warning)
+        uses: ./
+        with:
+          filepath: testdata/test.xml
+          xpath: "//client/nonexistentnode"
+          operation: delete
+
+      #
+      # Visa resultatet efter Test 9
+      #
+      - name: Show Test 9 result
+        run: cat testdata/test.xml
+
+      #
+      # Försök ta bort en icke-existerande nod – ska ge varning, inte fel
+      #
+      - name: Test 9 – Delete non-existent node (expect failure)
+        uses: ./
+        with:
+          filepath: testdata/test.xml
+          xpath: "//client/nonexistentnode"
+          operation: delete
+          failonwarning: true
+
+      #
+      # Visa resultatet efter Test 8
+      #
+      - name: Show Test 9 result
+        run: cat testdata/test.xml
