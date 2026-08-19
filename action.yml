@@ -11,14 +11,15 @@ inputs:
     description: "value to replace with"
     required: false
   newvalue:
-    description: "substring in value to replace (optional)"
+    description: "substring in value to replace (optional). For 'add', the XML to insert."
     required: false
   operation:
     description: |
-      Operation to perform: 
+      Operation to perform:
       - 'replace' (default): Replace text content or full node
       - 'read': Output current value of the selected node/attribute
       - 'delete': Remove the selected node or attribute
+      - 'add': Insert new XML (from 'newvalue') as the last child of the selected node(s)
     required: false
     default: "replace"
   namespaces:

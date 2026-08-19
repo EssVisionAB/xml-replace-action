@@ -153,6 +153,7 @@ jobs:
       #
       - name: Test 9 – Delete non-existent node (expect failure)
         uses: ./
+        continue-on-error: true
         with:
           filepath: testdata/test.xml
           xpath: "//client/nonexistentnode"
@@ -163,4 +164,79 @@ jobs:
       # Visa resultatet efter Test 8
       #
       - name: Show Test 9 result
+        run: cat testdata/test.xml
+
+      #
+      # Ersätt innehållet i <client> med flera nya poster
+      #
+      - name: Test 10 – Replace inner of a block with multiple new data entries
+        uses: ./
+        with:
+          filepath: testdata/test.xml
+          xpath: "//client"
+          operation: replace
+          replace: |
+            <client>
+              <endpoint name="Endpoint1" address="net.tcp://server1.example.com:1111/Service1" contract="Test.Contract.IService1" />
+              <endpoint name="Endpoint2" address="net.tcp://server2.example.com:2222/Service2" contract="Test.Contract.IService2" />
+              <endpoint name="Endpoint3" address="net.tcp://server3.example.com:3333/Service3" contract="Test.Contract.IService3" />
+            </client>
+
+      #
+      # Visa slutresultatet
+      #
+      - name: Show Test 10 result
+        run: cat testdata/test.xml
+
+      #
+      # Lägg till en ny endpoint sist i <client>
+      #
+      - name: Test 11 – Add a new node as last child
+        uses: ./
+        with:
+          filepath: testdata/test.xml
+          xpath: "//client"
+          operation: add
+          newvalue: '<endpoint name="Endpoint4" address="net.tcp://server4.example.com:4444/Service4" contract="Test.Contract.IService4" />'
+
+      #
+      # Visa slutresultatet
+      #
+      - name: Show Test 11 result
+        run: cat testdata/test.xml
+
+      #
+      # Lägg till flera nya endpoints sist i <client>
+      #
+      - name: Test 12 – Add multiple new nodes as last children
+        uses: ./
+        with:
+          filepath: testdata/test.xml
+          xpath: "//client"
+          operation: add
+          newvalue: |
+            <endpoint name="Endpoint5" address="net.tcp://server5.example.com:5555/Service5" contract="Test.Contract.IService5" />
+            <endpoint name="Endpoint6" address="net.tcp://server6.example.com:6666/Service6" contract="Test.Contract.IService6" />
+
+      #
+      # Visa slutresultatet
+      #
+      - name: Show Test 12 result
+        run: cat testdata/test.xml
+
+      #
+      # Försök lägga till på en icke-existerande nod – ska ge varning, inte fel
+      #
+      - name: Test 13 – Add to non-existent node (expect warning)
+        uses: ./
+        with:
+          filepath: testdata/test.xml
+          xpath: "//client/nonexistentnode"
+          operation: add
+          newvalue: '<foo>bar</foo>'
+
+      #
+      # Visa slutresultatet
+      #
+      - name: Show Test 13 result
         run: cat testdata/test.xml

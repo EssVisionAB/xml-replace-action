@@ -202,11 +202,22 @@ var NAMESPACE = freeze({
 	XMLNS: 'http://www.w3.org/2000/xmlns/',
 })
 
+//[4]   	NameStartChar	   ::=   	":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | [#xD8-#xF6] | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF] | [#x200C-#x200D] | [#x2070-#x218F] | [#x2C00-#x2FEF] | [#x3001-#xD7FF] | [#xF900-#xFDCF] | [#xFDF0-#xFFFD] | [#x10000-#xEFFFF]
+//[4a]   	NameChar	   ::=   	NameStartChar | "-" | "." | [0-9] | #xB7 | [#x0300-#x036F] | [#x203F-#x2040]
+//[5]   	Name	   ::=   	NameStartChar (NameChar)*
+var nameStartChar = /[A-Z_a-z\xC0-\xD6\xD8-\xF6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]///\u10000-\uEFFFF
+var nameChar = new RegExp("[\\-\\.0-9"+nameStartChar.source.slice(1,-1)+"\\u00B7\\u0300-\\u036F\\u203F-\\u2040]");
+var tagNamePattern = new RegExp('^'+nameStartChar.source+nameChar.source+'*(?:\:'+nameStartChar.source+nameChar.source+'*)?$');
+//var tagNamePattern = /^[a-zA-Z_][\w\-\.]*(?:\:[a-zA-Z_][\w\-\.]*)?$/
+
 exports.assign = assign;
 exports.find = find;
 exports.freeze = freeze;
 exports.MIME_TYPE = MIME_TYPE;
 exports.NAMESPACE = NAMESPACE;
+exports.nameStartChar = nameStartChar;
+exports.nameChar = nameChar;
+exports.tagNamePattern = tagNamePattern;
 
 
 /***/ }),
@@ -548,6 +559,7 @@ var conventions = __nccwpck_require__(9756);
 
 var find = conventions.find;
 var NAMESPACE = conventions.NAMESPACE;
+var tagNamePattern = conventions.tagNamePattern;
 
 /**
  * A prerequisite for `[].filter`, to drop elements that are empty
@@ -717,9 +729,10 @@ NodeList.prototype = {
 	item: function(index) {
 		return index >= 0 && index < this.length ? this[index] : null;
 	},
-	toString:function(isHTML,nodeFilter){
+	toString:function(isHTML,nodeFilter,options){
+		var requireWellFormed = !!options && !!options.requireWellFormed;
 		for(var buf = [], i = 0;i<this.length;i++){
-			serializeToString(this[i],buf,isHTML,nodeFilter);
+			serializeToString(this[i],buf,isHTML,nodeFilter,null,requireWellFormed);
 		}
 		return buf.join('');
 	},
@@ -965,13 +978,28 @@ DOMImplementation.prototype = {
 	/**
 	 * Returns a doctype, with the given `qualifiedName`, `publicId`, and `systemId`.
 	 *
-	 * __This behavior is slightly different from the in the specs__:
+	 * __This implementation differs from the specification:__
 	 * - this implementation is not validating names or qualified names
 	 *   (when parsing XML strings, the SAX parser takes care of that)
 	 *
+	 * Note: `internalSubset` can only be introduced via a direct property write to `node.internalSubset` after creation.
+	 * Creation-time validation of `publicId`, `systemId` is not enforced.
+	 * The serializer-level check covers all mutation vectors, including direct property writes.
+	 * `internalSubset` is only serialized as `[ ... ]` when both `publicId` and `systemId` are
+	 * absent (empty or `'.'`) — if either external identifier is present, `internalSubset` is
+	 * silently omitted from the serialized output.
+	 *
 	 * @param {string} qualifiedName
 	 * @param {string} [publicId]
+	 * The external subset public identifier. Stored verbatim including surrounding quotes.
+	 * When serialized with `requireWellFormed: true` (via the 4th-parameter options object),
+	 * throws `DOMException` with code `INVALID_STATE_ERR` if the value is non-empty and does
+	 * not match the XML `PubidLiteral` production (W3C DOM Parsing §3.2.1.3; XML 1.0 [12]).
 	 * @param {string} [systemId]
+	 * The external subset system identifier. Stored verbatim including surrounding quotes.
+	 * When serialized with `requireWellFormed: true`, throws `DOMException` with code
+	 * `INVALID_STATE_ERR` if the value is non-empty and does not match the XML `SystemLiteral`
+	 * production (W3C DOM Parsing §3.2.1.3; XML 1.0 [11]).
 	 * @returns {DocumentType} which can either be used with `DOMImplementation.createDocument` upon document creation
 	 * 				  or can be put into the document via methods like `Node.insertBefore()` or `Node.replaceChild()`
 	 *
@@ -1038,18 +1066,44 @@ Node.prototype = {
 		return cloneNode(this.ownerDocument||this,this,deep);
 	},
 	// Modified in DOM Level 2:
-	normalize:function(){
-		var child = this.firstChild;
-		while(child){
-			var next = child.nextSibling;
-			if(next && next.nodeType == TEXT_NODE && child.nodeType == TEXT_NODE){
-				this.removeChild(next);
-				child.appendData(next.data);
-			}else{
-				child.normalize();
-				child = next;
-			}
-		}
+	/**
+	 * Puts the specified node and all of its subtree into a "normalized" form. In a normalized
+	 * subtree, no text nodes in the subtree are empty and there are no adjacent text nodes.
+	 *
+	 * Specifically, this method merges any adjacent text nodes (i.e., nodes for which `nodeType`
+	 * is `TEXT_NODE`) into a single node with the combined data. It also removes any empty text
+	 * nodes.
+	 *
+	 * This method iteratively traverses all child nodes to normalize all descendant nodes within
+	 * the subtree.
+	 *
+	 * @throws {DOMException}
+	 * May throw a DOMException if operations within removeChild or appendData (which are
+	 * potentially invoked in this method) do not meet their specific constraints.
+	 * @see {@link Node.removeChild}
+	 * @see {@link CharacterData.appendData}
+	 * @see ../docs/walk-dom.md.
+	 */
+	normalize: function () {
+		walkDOM(this, null, {
+			enter: function (node) {
+				// Merge adjacent text children of node before walkDOM schedules them.
+				// walkDOM reads lastChild/previousSibling after enter returns, so the
+				// surviving post-merge children are what it descends into.
+				var child = node.firstChild;
+				while (child) {
+					var next = child.nextSibling;
+					if (next !== null && next.nodeType === TEXT_NODE && child.nodeType === TEXT_NODE) {
+						node.removeChild(next);
+						child.appendData(next.data);
+						// Do not advance child: re-check new nextSibling for another text run
+					} else {
+						child = next;
+					}
+				}
+				return true; // descend into surviving children
+			},
+		});
 	},
   	// Introduced in DOM Level 2:
 	isSupported:function(feature, version){
@@ -1125,21 +1179,103 @@ copy(NodeType,Node);
 copy(NodeType,Node.prototype);
 
 /**
- * @param callback return true for continue,false for break
- * @return boolean true: break visit;
+ * @param {Node} node
+ * Root of the subtree to visit.
+ * @param {function(Node): boolean} callback
+ * Called for each node in depth-first pre-order. Return a truthy value to stop traversal early.
+ * @return {boolean} `true` if traversal was aborted by the callback, `false` otherwise.
  */
-function _visitNode(node,callback){
-	if(callback(node)){
-		return true;
-	}
-	if(node = node.firstChild){
-		do{
-			if(_visitNode(node,callback)){return true}
-        }while(node=node.nextSibling)
-    }
+function _visitNode(node, callback) {
+	return walkDOM(node, null, { enter: function (n) { return callback(n) ? walkDOM.STOP : true; } }) === walkDOM.STOP;
 }
 
+/**
+ * Depth-first pre/post-order DOM tree walker.
+ *
+ * Visits every node in the subtree rooted at `node`. For each node:
+ *
+ * 1. Calls `callbacks.enter(node, context)` before descending into the node's children. The
+ * return value becomes the `context` passed to each child's `enter` call and to the matching
+ * `exit` call.
+ * 2. If `enter` returns `null` or `undefined`, the node's children are skipped;
+ * sibling traversal continues normally.
+ * 3. If `enter` returns `walkDOM.STOP`, the entire traversal is aborted immediately — no
+ * further `enter` or `exit` calls are made.
+ * 4. `lastChild` and `previousSibling` are read **after** `enter` returns, so `enter` may
+ * safely modify the node's own child list before the walker descends. Modifying siblings of
+ * the current node or any other part of the tree produces unpredictable results: nodes already
+ * queued on the stack are visited regardless of DOM changes, and newly inserted nodes outside
+ * the current child list are never visited.
+ * 5. Calls `callbacks.exit(node, context)` (if provided) after all of a node's children have
+ * been visited, passing the same `context` that `enter`
+ * returned for that node.
+ *
+ * This implementation uses an explicit stack and does not recurse — it is safe on arbitrarily
+ * deep trees.
+ *
+ * @param {Node} node
+ * Root of the subtree to walk.
+ * @param {*} context
+ * Initial context value passed to the root node's `enter`.
+ * @param {{ enter: function(Node, *): *, exit?: function(Node, *): void }} callbacks
+ * @returns {void | walkDOM.STOP}
+ * @see ../docs/walk-dom.md.
+ */
+function walkDOM(node, context, callbacks) {
+	// Each stack frame is {node, context, phase}:
+	//   walkDOM.ENTER — call enter, then push children
+	//   walkDOM.EXIT  — call exit
+	var stack = [{ node: node, context: context, phase: walkDOM.ENTER }];
+	while (stack.length > 0) {
+		var frame = stack.pop();
+		if (frame.phase === walkDOM.ENTER) {
+			var childContext = callbacks.enter(frame.node, frame.context);
+			if (childContext === walkDOM.STOP) {
+				return walkDOM.STOP;
+			}
+			// Push exit frame before children so it fires after all children are processed (Last In First Out)
+			stack.push({ node: frame.node, context: childContext, phase: walkDOM.EXIT });
+			if (childContext === null || childContext === undefined) {
+				continue; // skip children
+			}
+			// lastChild is read after enter returns, so enter may modify the child list.
+			var child = frame.node.lastChild;
+			// Traverse from lastChild backwards so that pushing onto the stack
+			// naturally yields firstChild on top (processed first).
+			while (child) {
+				stack.push({ node: child, context: childContext, phase: walkDOM.ENTER });
+				child = child.previousSibling;
+			}
+		} else {
+			// frame.phase === walkDOM.EXIT
+			if (callbacks.exit) {
+				callbacks.exit(frame.node, frame.context);
+			}
+		}
+	}
+}
 
+/**
+ * Sentinel value returned from a `walkDOM` `enter` callback to abort the entire traversal
+ * immediately.
+ *
+ * @type {symbol}
+ */
+walkDOM.STOP = Symbol('walkDOM.STOP');
+/**
+ * Phase constant for a stack frame that has not yet been visited.
+ * The `enter` callback is called and children are scheduled.
+ *
+ * @type {number}
+ */
+walkDOM.ENTER = 0;
+/**
+ * Phase constant for a stack frame whose subtree has been fully visited.
+ * The `exit` callback is called.
+ *
+ * @type {number}
+ */
+walkDOM.EXIT = 1;
 
 function Document(){
 	this.ownerDocument = this;
@@ -1743,12 +1879,44 @@ Document.prototype = {
 		node.appendData(data)
 		return node;
 	},
+	/**
+	 * Returns a new CDATASection node whose data is `data`.
+	 *
+	 * __This implementation differs from the specification:__
+	 * - calling this method on an HTML document does not throw `NotSupportedError`.
+	 *
+	 * @param {string} data
+	 * @returns {CDATASection}
+	 * @throws DOMException with code `INVALID_CHARACTER_ERR` if `data` contains `"]]>"`.
+	 * @see https://developer.mozilla.org/en-US/docs/Web/API/Document/createCDATASection
+	 * @see https://dom.spec.whatwg.org/#dom-document-createcdatasection
+	 */
 	createCDATASection :	function(data){
+		if (data.indexOf(']]>') !== -1) {
+			throw new DOMException(INVALID_CHARACTER_ERR, 'data contains "]]>"');
+		}
 		var node = new CDATASection();
 		node.ownerDocument = this;
 		node.appendData(data)
 		return node;
 	},
+	/**
+	 * Returns a ProcessingInstruction node whose target is target and data is data.
+	 *
+	 * __This implementation differs from the specification:__
+	 * - it does not do any input validation on the arguments and doesn't throw "InvalidCharacterError".
+	 *
+	 * Note: When the resulting document is serialized with `requireWellFormed: true`, the
+	 * serializer throws with code `INVALID_STATE_ERR` if `.data` contains `?>` (W3C DOM Parsing
+	 * §3.2.1.7). Without that option the data is emitted verbatim.
+	 *
+	 * @param {string} target
+	 * @param {string} data
+	 * @returns {ProcessingInstruction}
+	 * @see https://developer.mozilla.org/docs/Web/API/Document/createProcessingInstruction
+	 * @see https://dom.spec.whatwg.org/#dom-document-createprocessinginstruction
+	 * @see https://www.w3.org/TR/DOM-Parsing/#dfn-concept-serialize-xml §3.2.1.7
+	 */
 	createProcessingInstruction :	function(target,data){
 		var node = new ProcessingInstruction();
 		node.ownerDocument = this;
@@ -1980,6 +2148,19 @@ CDATASection.prototype = {
 _extends(CDATASection,CharacterData);
 
 
+/**
+ * Represents a DocumentType node (the `<!DOCTYPE ...>` declaration).
+ *
+ * `publicId`, `systemId`, and `internalSubset` are plain own-property assignments.
+ * xmldom does not enforce the `readonly` constraint declared by the WHATWG DOM spec —
+ * direct property writes succeed silently. Values are serialized verbatim when
+ * `requireWellFormed` is false (the default). When the serializer is invoked with
+ * `requireWellFormed: true` (via the 4th-parameter options object), it validates each
+ * field and throws `DOMException` with code `INVALID_STATE_ERR` on invalid values.
+ *
+ * @class
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/DocumentType MDN
+ */
 function DocumentType() {
 };
 DocumentType.prototype.nodeType = DOCUMENT_TYPE_NODE;
@@ -2012,11 +2193,51 @@ function ProcessingInstruction() {
 ProcessingInstruction.prototype.nodeType = PROCESSING_INSTRUCTION_NODE;
 _extends(ProcessingInstruction,Node);
 function XMLSerializer(){}
-XMLSerializer.prototype.serializeToString = function(node,isHtml,nodeFilter){
-	return nodeSerializeToString.call(node,isHtml,nodeFilter);
+/**
+ * Returns the result of serializing `node` to XML.
+ *
+ * When `options.requireWellFormed` is `true`, the serializer throws for content that would
+ * produce ill-formed XML.
+ *
+ * __This implementation differs from the specification:__
+ * - CDATASection nodes whose data contains `]]>` are serialized by splitting the section
+ *   at each `]]>` occurrence (following W3C DOM Level 3 Core `split-cdata-sections`
+ *   default behaviour) unless `requireWellFormed` is `true`.
+ * - when `requireWellFormed` is `true`, `DOMException` with code `INVALID_STATE_ERR`
+ *   is only thrown to prevent injection vectors, not for all the spec mandated checks.
+ *
+ * @param {Node} node
+ * @param {boolean} [isHtml]
+ * @param {function} [nodeFilter]
+ * @param {Object} [options]
+ * @param {boolean} [options.requireWellFormed=false]
+ * When `true`, throws for content that would produce ill-formed XML.
+ * @returns {string}
+ * @throws {DOMException}
+ * With code `INVALID_STATE_ERR` when `requireWellFormed` is `true` and:
+ * - an Element's qualified name (including any namespace prefix) is not a valid XML QName,
+ * - an attribute's qualified name (including a synthesized `xmlns:` namespace declaration) is
+ *   not a valid XML QName,
+ * - a CDATASection node's data contains `"]]>"`,
+ * - a Comment node's data contains `"-->"` (bare `"--"` does not throw on this branch),
+ * - a ProcessingInstruction's data contains `"?>"`,
+ * - a DocumentType's `publicId` is non-empty and does not match the XML `PubidLiteral`
+ *   production,
+ * - a DocumentType's `systemId` is non-empty and does not match the XML `SystemLiteral`
+ *   production, or
+ * - a DocumentType's `internalSubset` contains `"]>"`.
+ * Note: xmldom does not enforce `readonly` on DocumentType fields — direct property
+ * writes succeed and are covered by the serializer-level checks above.
+ * @see https://html.spec.whatwg.org/#dom-xmlserializer-serializetostring
+ * @see https://w3c.github.io/DOM-Parsing/#xml-serialization
+ * @see https://github.com/w3c/DOM-Parsing/issues/84
+ */
+XMLSerializer.prototype.serializeToString = function(node,isHtml,nodeFilter,options){
+	return nodeSerializeToString.call(node,isHtml,nodeFilter,options);
 }
 Node.prototype.toString = nodeSerializeToString;
-function nodeSerializeToString(isHtml,nodeFilter){
+function nodeSerializeToString(isHtml,nodeFilter,options){
+	var requireWellFormed = !!options && !!options.requireWellFormed;
 	var buf = [];
 	var refNode = this.nodeType == 9 && this.documentElement || this;
 	var prefix = refNode.prefix;
@@ -2033,7 +2254,7 @@ function nodeSerializeToString(isHtml,nodeFilter){
 			]
 		}
 	}
-	serializeToString(this,buf,isHtml,nodeFilter,visibleNamespaces);
+	serializeToString(this,buf,isHtml,nodeFilter,visibleNamespaces,requireWellFormed);
 	//console.log('###',this.nodeType,uri,prefix,buf.join(''))
 	return buf.join('');
 }
@@ -2078,276 +2299,333 @@ function needNamespaceDefine(node, isHTML, visibleNamespaces) {
  * @see https://www.w3.org/TR/xml11/#AVNormalize
  * @see https://w3c.github.io/DOM-Parsing/#serializing-an-element-s-attributes
  */
-function addSerializedAttribute(buf, qualifiedName, value) {
+function addSerializedAttribute(buf, qualifiedName, value, requireWellFormed) {
+	if (requireWellFormed && !tagNamePattern.test(qualifiedName)) {
+		throw new DOMException(INVALID_STATE_ERR, 'The attribute name "' + qualifiedName + '" is not a valid XML QName');
+	}
 	buf.push(' ', qualifiedName, '="', value.replace(/[<>&"\t\n\r]/g, _xmlEncoder), '"')
 }
 
-function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces){
+function serializeToString(node, buf, isHTML, nodeFilter, visibleNamespaces, requireWellFormed) {
 	if (!visibleNamespaces) {
 		visibleNamespaces = [];
 	}
+	walkDOM(node, { ns: visibleNamespaces, isHTML: isHTML }, {
+		enter: function (n, ctx) {
+			var ns = ctx.ns;
+			var html = ctx.isHTML;
 
-	if(nodeFilter){
-		node = nodeFilter(node);
-		if(node){
-			if(typeof node == 'string'){
-				buf.push(node);
-				return;
-			}
-		}else{
-			return;
-		}
-		//buf.sort.apply(attrs, attributeSorter);
-	}
-
-	switch(node.nodeType){
-	case ELEMENT_NODE:
-		var attrs = node.attributes;
-		var len = attrs.length;
-		var child = node.firstChild;
-		var nodeName = node.tagName;
-
-		isHTML = NAMESPACE.isHTML(node.namespaceURI) || isHTML
-
-		var prefixedNodeName = nodeName
-		if (!isHTML && !node.prefix && node.namespaceURI) {
-			var defaultNS
-			// lookup current default ns from `xmlns` attribute
-			for (var ai = 0; ai < attrs.length; ai++) {
-				if (attrs.item(ai).name === 'xmlns') {
-					defaultNS = attrs.item(ai).value
-					break
-				}
-			}
-			if (!defaultNS) {
-				// lookup current default ns in visibleNamespaces
-				for (var nsi = visibleNamespaces.length - 1; nsi >= 0; nsi--) {
-					var namespace = visibleNamespaces[nsi]
-					if (namespace.prefix === '' && namespace.namespace === node.namespaceURI) {
-						defaultNS = namespace.namespace
-						break
+			if (nodeFilter) {
+				n = nodeFilter(n);
+				if (n) {
+					if (typeof n == 'string') {
+						buf.push(n);
+						return null;
 					}
+				} else {
+					return null;
 				}
 			}
-			if (defaultNS !== node.namespaceURI) {
-				for (var nsi = visibleNamespaces.length - 1; nsi >= 0; nsi--) {
-					var namespace = visibleNamespaces[nsi]
-					if (namespace.namespace === node.namespaceURI) {
-						if (namespace.prefix) {
-							prefixedNodeName = namespace.prefix + ':' + nodeName
+
+			switch (n.nodeType) {
+				case ELEMENT_NODE:
+					var attrs = n.attributes;
+					var len = attrs.length;
+					var nodeName = n.tagName;
+
+					html = NAMESPACE.isHTML(n.namespaceURI) || html;
+
+					var prefixedNodeName = nodeName;
+					if (!html && !n.prefix && n.namespaceURI) {
+						var defaultNS;
+						// lookup current default ns from `xmlns` attribute
+						for (var ai = 0; ai < attrs.length; ai++) {
+							if (attrs.item(ai).name === 'xmlns') {
+								defaultNS = attrs.item(ai).value;
+								break;
+							}
 						}
-						break
+						if (!defaultNS) {
+							// lookup current default ns in visibleNamespaces
+							for (var nsi = ns.length - 1; nsi >= 0; nsi--) {
+								var nsEntry = ns[nsi];
+								if (nsEntry.prefix === '' && nsEntry.namespace === n.namespaceURI) {
+									defaultNS = nsEntry.namespace;
+									break;
+								}
+							}
+						}
+						if (defaultNS !== n.namespaceURI) {
+							for (var nsi = ns.length - 1; nsi >= 0; nsi--) {
+								var nsEntry = ns[nsi];
+								if (nsEntry.namespace === n.namespaceURI) {
+									if (nsEntry.prefix) {
+										prefixedNodeName = nsEntry.prefix + ':' + nodeName;
+									}
+									break;
+								}
+							}
+						}
 					}
-				}
-			}
-		}
 
-		buf.push('<', prefixedNodeName);
-
-		for(var i=0;i<len;i++){
-			// add namespaces for attributes
-			var attr = attrs.item(i);
-			if (attr.prefix == 'xmlns') {
-				visibleNamespaces.push({ prefix: attr.localName, namespace: attr.value });
-			}else if(attr.nodeName == 'xmlns'){
-				visibleNamespaces.push({ prefix: '', namespace: attr.value });
-			}
-		}
-
-		for(var i=0;i<len;i++){
-			var attr = attrs.item(i);
-			if (needNamespaceDefine(attr,isHTML, visibleNamespaces)) {
-				var prefix = attr.prefix||'';
-				var uri = attr.namespaceURI;
-				addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
-				visibleNamespaces.push({ prefix: prefix, namespace:uri });
-			}
-			serializeToString(attr,buf,isHTML,nodeFilter,visibleNamespaces);
-		}
-
-		// add namespace for current node
-		if (nodeName === prefixedNodeName && needNamespaceDefine(node, isHTML, visibleNamespaces)) {
-			var prefix = node.prefix||'';
-			var uri = node.namespaceURI;
-			addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
-			visibleNamespaces.push({ prefix: prefix, namespace:uri });
-		}
-
-		if(child || isHTML && !/^(?:meta|link|img|br|hr|input)$/i.test(nodeName)){
-			buf.push('>');
-			//if is cdata child node
-			if(isHTML && /^script$/i.test(nodeName)){
-				while(child){
-					if(child.data){
-						buf.push(child.data);
-					}else{
-						serializeToString(child, buf, isHTML, nodeFilter, visibleNamespaces.slice());
+					if (requireWellFormed && !tagNamePattern.test(prefixedNodeName)) {
+						throw new DOMException(INVALID_STATE_ERR, 'The element name "' + prefixedNodeName + '" is not a valid XML QName');
 					}
-					child = child.nextSibling;
-				}
-			}else
-			{
-				while(child){
-					serializeToString(child, buf, isHTML, nodeFilter, visibleNamespaces.slice());
-					child = child.nextSibling;
-				}
+					buf.push('<', prefixedNodeName);
+
+					// Build a fresh namespace snapshot for this element's children.
+					// The slice prevents sibling elements from inheriting each other's declarations.
+					var childNs = ns.slice();
+					for (var i = 0; i < len; i++) {
+						var attr = attrs.item(i);
+						if (attr.prefix == 'xmlns') {
+							childNs.push({ prefix: attr.localName, namespace: attr.value });
+						} else if (attr.nodeName == 'xmlns') {
+							childNs.push({ prefix: '', namespace: attr.value });
+						}
+					}
+
+					for (var i = 0; i < len; i++) {
+						var attr = attrs.item(i);
+						if (needNamespaceDefine(attr, html, childNs)) {
+							var attrPrefix = attr.prefix || '';
+							var uri = attr.namespaceURI;
+							addSerializedAttribute(buf, attrPrefix ? 'xmlns:' + attrPrefix : 'xmlns', uri, requireWellFormed);
+							childNs.push({ prefix: attrPrefix, namespace: uri });
+						}
+						// Apply nodeFilter and serialize the attribute.
+						var filteredAttr = nodeFilter ? nodeFilter(attr) : attr;
+						if (filteredAttr) {
+							if (typeof filteredAttr === 'string') {
+								buf.push(filteredAttr);
+							} else {
+								addSerializedAttribute(buf, filteredAttr.name, filteredAttr.value, requireWellFormed);
+							}
+						}
+					}
+
+					// add namespace for current node
+					if (nodeName === prefixedNodeName && needNamespaceDefine(n, html, childNs)) {
+						var nodePrefix = n.prefix || '';
+						var uri = n.namespaceURI;
+						addSerializedAttribute(buf, nodePrefix ? 'xmlns:' + nodePrefix : 'xmlns', uri, requireWellFormed);
+						childNs.push({ prefix: nodePrefix, namespace: uri });
+					}
+
+					var child = n.firstChild;
+					if (child || html && !/^(?:meta|link|img|br|hr|input)$/i.test(nodeName)) {
+						buf.push('>');
+						if (html && /^script$/i.test(nodeName)) {
+							// Inline serialization for <script> children; return null to skip walkDOM descent.
+							while (child) {
+								if (child.data) {
+									buf.push(child.data);
+								} else {
+									serializeToString(child, buf, html, nodeFilter, childNs.slice(), requireWellFormed);
+								}
+								child = child.nextSibling;
+							}
+							buf.push('</', nodeName, '>');
+							return null;
+						}
+						// Return child context; walkDOM descends and exit emits the closing tag.
+						return { ns: childNs, isHTML: html, tag: prefixedNodeName };
+					} else {
+						buf.push('/>');
+						return null;
+					}
+
+				case DOCUMENT_NODE:
+				case DOCUMENT_FRAGMENT_NODE:
+					// Descend into children; exit is a no-op (tag is null).
+					return { ns: ns.slice(), isHTML: html, tag: null };
+
+				case ATTRIBUTE_NODE:
+					addSerializedAttribute(buf, n.name, n.value, requireWellFormed);
+					return null;
+
+				case TEXT_NODE:
+					/**
+					 * The ampersand character (&) and the left angle bracket (<) must not appear in their literal form,
+					 * except when used as markup delimiters, or within a comment, a processing instruction, or a CDATA section.
+					 * If they are needed elsewhere, they must be escaped using either numeric character references or the strings
+					 * `&amp;` and `&lt;` respectively.
+					 * The right angle bracket (>) may be represented using the string " &gt; ", and must, for compatibility,
+					 * be escaped using either `&gt;` or a character reference when it appears in the string `]]>` in content,
+					 * when that string is not marking the end of a CDATA section.
+					 *
+					 * In the content of elements, character data is any string of characters
+					 * which does not contain the start-delimiter of any markup
+					 * and does not include the CDATA-section-close delimiter, `]]>`.
+					 *
+					 * @see https://www.w3.org/TR/xml/#NT-CharData
+					 * @see https://w3c.github.io/DOM-Parsing/#xml-serializing-a-text-node
+					 */
+					buf.push(n.data.replace(/[<&>]/g, _xmlEncoder));
+					return null;
+
+				case CDATA_SECTION_NODE:
+					if (requireWellFormed && n.data.indexOf(']]>') !== -1) {
+						throw new DOMException(INVALID_STATE_ERR, 'The CDATASection data contains "]]>"');
+					}
+					buf.push('<![CDATA[', n.data.replace(/]]>/g, ']]]]><![CDATA[>'), ']]>');
+					return null;
+
+				case COMMENT_NODE:
+					if (requireWellFormed && n.data.indexOf('-->') !== -1) {
+						throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains "-->"');
+					}
+					buf.push('<!--', n.data, '-->');
+					return null;
+
+				case DOCUMENT_TYPE_NODE:
+					if (requireWellFormed) {
+						if (n.publicId && !/^("[\x20\r\na-zA-Z0-9\-()+,.\/:=?;!*#@$_%']*"|'[\x20\r\na-zA-Z0-9\-()+,.\/:=?;!*#@$_%'"]*')$/.test(n.publicId)) {
+							throw new DOMException(INVALID_STATE_ERR, 'DocumentType publicId is not a valid PubidLiteral');
+						}
+						if (n.systemId && !/^("[^"]*"|'[^']*')$/.test(n.systemId)) {
+							throw new DOMException(INVALID_STATE_ERR, 'DocumentType systemId is not a valid SystemLiteral');
+						}
+						if (n.internalSubset && n.internalSubset.indexOf(']>') !== -1) {
+							throw new DOMException(INVALID_STATE_ERR, 'DocumentType internalSubset contains "]>"');
+						}
+					}
+					var pubid = n.publicId;
+					var sysid = n.systemId;
+					buf.push('<!DOCTYPE ', n.name);
+					if (pubid) {
+						buf.push(' PUBLIC ', pubid);
+						if (sysid && sysid != '.') {
+							buf.push(' ', sysid);
+						}
+						buf.push('>');
+					} else if (sysid && sysid != '.') {
+						buf.push(' SYSTEM ', sysid, '>');
+					} else {
+						var sub = n.internalSubset;
+						if (sub) {
+							buf.push(' [', sub, ']');
+						}
+						buf.push('>');
+					}
+					return null;
+
+				case PROCESSING_INSTRUCTION_NODE:
+					if (requireWellFormed && n.data.indexOf('?>') !== -1) {
+						throw new DOMException(INVALID_STATE_ERR, 'The ProcessingInstruction data contains "?>"');
+					}
+					buf.push('<?', n.target, ' ', n.data, '?>');
+					return null;
+
+				case ENTITY_REFERENCE_NODE:
+					buf.push('&', n.nodeName, ';');
+					return null;
+
+				//case ENTITY_NODE:
+				//case NOTATION_NODE:
+				default:
+					buf.push('??', n.nodeName);
+					return null;
 			}
-			buf.push('</',prefixedNodeName,'>');
-		}else{
-			buf.push('/>');
-		}
-		// remove added visible namespaces
-		//visibleNamespaces.length = startVisibleNamespaces;
-		return;
-	case DOCUMENT_NODE:
-	case DOCUMENT_FRAGMENT_NODE:
-		var child = node.firstChild;
-		while(child){
-			serializeToString(child, buf, isHTML, nodeFilter, visibleNamespaces.slice());
-			child = child.nextSibling;
-		}
-		return;
-	case ATTRIBUTE_NODE:
-		return addSerializedAttribute(buf, node.name, node.value);
-	case TEXT_NODE:
-		/**
-		 * The ampersand character (&) and the left angle bracket (<) must not appear in their literal form,
-		 * except when used as markup delimiters, or within a comment, a processing instruction, or a CDATA section.
-		 * If they are needed elsewhere, they must be escaped using either numeric character references or the strings
-		 * `&amp;` and `&lt;` respectively.
-		 * The right angle bracket (>) may be represented using the string " &gt; ", and must, for compatibility,
-		 * be escaped using either `&gt;` or a character reference when it appears in the string `]]>` in content,
-		 * when that string is not marking the end of a CDATA section.
-		 *
-		 * In the content of elements, character data is any string of characters
-		 * which does not contain the start-delimiter of any markup
-		 * and does not include the CDATA-section-close delimiter, `]]>`.
-		 *
-		 * @see https://www.w3.org/TR/xml/#NT-CharData
-		 * @see https://w3c.github.io/DOM-Parsing/#xml-serializing-a-text-node
-		 */
-		return buf.push(node.data
-			.replace(/[<&>]/g,_xmlEncoder)
-		);
-	case CDATA_SECTION_NODE:
-		return buf.push( '<![CDATA[',node.data,']]>');
-	case COMMENT_NODE:
-		return buf.push( "<!--",node.data,"-->");
-	case DOCUMENT_TYPE_NODE:
-		var pubid = node.publicId;
-		var sysid = node.systemId;
-		buf.push('<!DOCTYPE ',node.name);
-		if(pubid){
-			buf.push(' PUBLIC ', pubid);
-			if (sysid && sysid!='.') {
-				buf.push(' ', sysid);
+		},
+		exit: function (n, childCtx) {
+			if (childCtx && childCtx.tag) {
+				buf.push('</', childCtx.tag, '>');
 			}
-			buf.push('>');
-		}else if(sysid && sysid!='.'){
-			buf.push(' SYSTEM ', sysid, '>');
-		}else{
-			var sub = node.internalSubset;
-			if(sub){
-				buf.push(" [",sub,"]");
-			}
-			buf.push(">");
-		}
-		return;
-	case PROCESSING_INSTRUCTION_NODE:
-		return buf.push( "<?",node.target," ",node.data,"?>");
-	case ENTITY_REFERENCE_NODE:
-		return buf.push( '&',node.nodeName,';');
-	//case ENTITY_NODE:
-	//case NOTATION_NODE:
-	default:
-		buf.push('??',node.nodeName);
-	}
+		},
+	});
 }
-function importNode(doc,node,deep){
-	var node2;
-	switch (node.nodeType) {
-	case ELEMENT_NODE:
-		node2 = node.cloneNode(false);
-		node2.ownerDocument = doc;
-		//var attrs = node2.attributes;
-		//var len = attrs.length;
-		//for(var i=0;i<len;i++){
-			//node2.setAttributeNodeNS(importNode(doc,attrs.item(i),deep));
-		//}
-	case DOCUMENT_FRAGMENT_NODE:
-		break;
-	case ATTRIBUTE_NODE:
-		deep = true;
-		break;
-	//case ENTITY_REFERENCE_NODE:
-	//case PROCESSING_INSTRUCTION_NODE:
-	////case TEXT_NODE:
-	//case CDATA_SECTION_NODE:
-	//case COMMENT_NODE:
-	//	deep = false;
-	//	break;
-	//case DOCUMENT_NODE:
-	//case DOCUMENT_TYPE_NODE:
-	//cannot be imported.
-	//case ENTITY_NODE:
-	//case NOTATION_NODE：
-	//can not hit in level3
-	//default:throw e;
-	}
-	if(!node2){
-		node2 = node.cloneNode(false);//false
-	}
-	node2.ownerDocument = doc;
-	node2.parentNode = null;
-	if(deep){
-		var child = node.firstChild;
-		while(child){
-			node2.appendChild(importNode(doc,child,deep));
-			child = child.nextSibling;
-		}
-	}
-	return node2;
+/**
+ * Imports a node from a different document into `doc`, creating a new copy.
+ * Delegates to {@link walkDOM} for traversal. Each node in the subtree is shallow-cloned,
+ * stamped with `doc` as its `ownerDocument`, and detached (`parentNode` set to `null`).
+ * Children are imported recursively when `deep` is `true`; for {@link Attr} nodes `deep` is
+ * always forced to `true`
+ * because an attribute's value lives in a child text node.
+ *
+ * @param {Document} doc
+ * The document that will own the imported node.
+ * @param {Node} node
+ * The node to import.
+ * @param {boolean} deep
+ * If `true`, descendants are imported recursively.
+ * @returns {Node}
+ * The newly imported node, now owned by `doc`.
+ */
+function importNode(doc, node, deep) {
+	var destRoot;
+	walkDOM(node, null, {
+		enter: function (srcNode, destParent) {
+			// Shallow-clone the node and stamp it into the target document.
+			var destNode = srcNode.cloneNode(false);
+			destNode.ownerDocument = doc;
+			destNode.parentNode = null;
+			// capture as the root of the imported subtree or attach to parent.
+			if (destParent === null) {
+				destRoot = destNode;
+			} else {
+				destParent.appendChild(destNode);
+			}
+			// ATTRIBUTE_NODE must always be imported deeply: its value lives in a child text node.
+			var shouldDeep = srcNode.nodeType === ATTRIBUTE_NODE || deep;
+			return shouldDeep ? destNode : null;
+		},
+	});
+	return destRoot;
 }
 //
 //var _relationMap = {firstChild:1,lastChild:1,previousSibling:1,nextSibling:1,
 //					attributes:1,childNodes:1,parentNode:1,documentElement:1,doctype,};
-function cloneNode(doc,node,deep){
-	var node2 = new node.constructor();
-	for (var n in node) {
-		if (Object.prototype.hasOwnProperty.call(node, n)) {
-			var v = node[n];
-			if (typeof v != "object") {
-				if (v != node2[n]) {
-					node2[n] = v;
+function cloneNode(doc, node, deep) {
+	var destRoot;
+	walkDOM(node, null, {
+		enter: function (srcNode, destParent) {
+			// 1. Create a blank node of the same type and copy all scalar own properties.
+			var destNode = new srcNode.constructor();
+			for (var n in srcNode) {
+				if (Object.prototype.hasOwnProperty.call(srcNode, n)) {
+					var v = srcNode[n];
+					if (typeof v != 'object') {
+						if (v != destNode[n]) {
+							destNode[n] = v;
+						}
+					}
 				}
 			}
-		}
-	}
-	if(node.childNodes){
-		node2.childNodes = new NodeList();
-	}
-	node2.ownerDocument = doc;
-	switch (node2.nodeType) {
-	case ELEMENT_NODE:
-		var attrs	= node.attributes;
-		var attrs2	= node2.attributes = new NamedNodeMap();
-		var len = attrs.length
-		attrs2._ownerElement = node2;
-		for(var i=0;i<len;i++){
-			node2.setAttributeNode(cloneNode(doc,attrs.item(i),true));
-		}
-		break;;
-	case ATTRIBUTE_NODE:
-		deep = true;
-	}
-	if(deep){
-		var child = node.firstChild;
-		while(child){
-			node2.appendChild(cloneNode(doc,child,deep));
-			child = child.nextSibling;
-		}
-	}
-	return node2;
+			if (srcNode.childNodes) {
+				destNode.childNodes = new NodeList();
+			}
+			destNode.ownerDocument = doc;
+			// 2. Handle node-type-specific setup.
+			//    Attributes are not DOM children, so they are cloned inline here
+			//    rather than by walkDOM descent.
+			//    ATTRIBUTE_NODE forces deep=true so its own children are walked.
+			var shouldDeep = deep;
+			switch (destNode.nodeType) {
+				case ELEMENT_NODE:
+					var attrs = srcNode.attributes;
+					var attrs2 = (destNode.attributes = new NamedNodeMap());
+					var len = attrs.length;
+					attrs2._ownerElement = destNode;
+					for (var i = 0; i < len; i++) {
+						destNode.setAttributeNode(cloneNode(doc, attrs.item(i), true));
+					}
+					break;
+				case ATTRIBUTE_NODE:
+					shouldDeep = true;
+			}
+			// 3. Attach to parent, or capture as the root of the cloned subtree.
+			if (destParent !== null) {
+				destParent.appendChild(destNode);
+			} else {
+				destRoot = destNode;
+			}
+			// 4. Return destNode as the context for children (causes walkDOM to descend),
+			//    or null to skip children (shallow clone).
+			return shouldDeep ? destNode : null;
+		},
+	});
+	return destRoot;
 }
 
 function __set__(object,key,value){
@@ -2363,48 +2641,54 @@ try{
 			}
 		});
 
-		Object.defineProperty(Node.prototype,'textContent',{
-			get:function(){
-				return getTextContent(this);
+		/**
+		 * The text content of this node and its descendants.
+		 *
+		 * Setting `textContent` on an element or document fragment replaces all child nodes with a
+		 * single text node; on other nodes it sets `data`, `value`, and `nodeValue` directly.
+		 *
+		 * @type {string | null}
+		 * @see {@link https://dom.spec.whatwg.org/#dom-node-textcontent}
+		 */
+		Object.defineProperty(Node.prototype, 'textContent', {
+			get: function () {
+				if (this.nodeType === ELEMENT_NODE || this.nodeType === DOCUMENT_FRAGMENT_NODE) {
+					var buf = [];
+					walkDOM(this, null, {
+						enter: function (n) {
+							if (n.nodeType === ELEMENT_NODE || n.nodeType === DOCUMENT_FRAGMENT_NODE) {
+								return true; // enter children
+							}
+							if (n.nodeType === PROCESSING_INSTRUCTION_NODE || n.nodeType === COMMENT_NODE) {
+								return null; // excluded from text content
+							}
+							buf.push(n.nodeValue);
+						},
+					});
+					return buf.join('');
+				}
+				return this.nodeValue;
 			},
 
-			set:function(data){
-				switch(this.nodeType){
-				case ELEMENT_NODE:
-				case DOCUMENT_FRAGMENT_NODE:
-					while(this.firstChild){
-						this.removeChild(this.firstChild);
-					}
-					if(data || String(data)){
-						this.appendChild(this.ownerDocument.createTextNode(data));
-					}
-					break;
+			set: function (data) {
+				switch (this.nodeType) {
+					case ELEMENT_NODE:
+					case DOCUMENT_FRAGMENT_NODE:
+						while (this.firstChild) {
+							this.removeChild(this.firstChild);
+						}
+						if (data || String(data)) {
+							this.appendChild(this.ownerDocument.createTextNode(data));
+						}
+						break;
 
-				default:
-					this.data = data;
-					this.value = data;
-					this.nodeValue = data;
+					default:
+						this.data = data;
+						this.value = data;
+						this.nodeValue = data;
 				}
-			}
+			},
 		})
-
-		function getTextContent(node){
-			switch(node.nodeType){
-			case ELEMENT_NODE:
-			case DOCUMENT_FRAGMENT_NODE:
-				var buf = [];
-				node = node.firstChild;
-				while(node){
-					if(node.nodeType!==7 && node.nodeType !==8){
-						buf.push(getTextContent(node));
-					}
-					node = node.nextSibling;
-				}
-				return buf.join('');
-			default:
-				return node.nodeValue;
-			}
-		}
 
 		__set__ = function(object,key,value){
 			//console.log(value)
@@ -2421,6 +2705,7 @@ try{
 	exports.Element = Element;
 	exports.Node = Node;
 	exports.NodeList = NodeList;
+	exports.walkDOM = walkDOM;
 	exports.XMLSerializer = XMLSerializer;
 //}
 
@@ -4616,14 +4901,8 @@ exports.DOMParser = __nccwpck_require__(5072).DOMParser
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 var NAMESPACE = (__nccwpck_require__(9756).NAMESPACE);
+var tagNamePattern = (__nccwpck_require__(9756).tagNamePattern);
 
-//[4]   	NameStartChar	   ::=   	":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | [#xD8-#xF6] | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF] | [#x200C-#x200D] | [#x2070-#x218F] | [#x2C00-#x2FEF] | [#x3001-#xD7FF] | [#xF900-#xFDCF] | [#xFDF0-#xFFFD] | [#x10000-#xEFFFF]
-//[4a]   	NameChar	   ::=   	NameStartChar | "-" | "." | [0-9] | #xB7 | [#x0300-#x036F] | [#x203F-#x2040]
-//[5]   	Name	   ::=   	NameStartChar (NameChar)*
-var nameStartChar = /[A-Z_a-z\xC0-\xD6\xD8-\xF6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]///\u10000-\uEFFFF
-var nameChar = new RegExp("[\\-\\.0-9"+nameStartChar.source.slice(1,-1)+"\\u00B7\\u0300-\\u036F\\u203F-\\u2040]");
-var tagNamePattern = new RegExp('^'+nameStartChar.source+nameChar.source+'*(?:\:'+nameStartChar.source+nameChar.source+'*)?$');
-//var tagNamePattern = /^[a-zA-Z_][\w\-\.]*(?:\:[a-zA-Z_][\w\-\.]*)?$/
 //var handlers = 'resolveEntity,getExternalSubset,characters,endDocument,endElement,endPrefixMapping,ignorableWhitespace,processingInstruction,setDocumentLocator,skippedEntity,startDocument,startElement,startPrefixMapping,notationDecl,unparsedEntityDecl,error,fatalError,warning,attributeDecl,elementDecl,externalEntityDecl,internalEntityDecl,comment,endCDATA,endDTD,endEntity,startCDATA,startDTD,startEntity'.split(',')
 
 //S_TAG,	S_ATTR,	S_EQ,	S_ATTR_NOQUOT_VALUE
@@ -5214,7 +5493,7 @@ function parseDCC(source,start,domBuilder,errorHandler){//sure start with '<!'
 function parseInstruction(source,start,domBuilder){
 	var end = source.indexOf('?>',start);
 	if(end){
-		var match = source.substring(start,end).match(/^<\?(\S*)\s*([\s\S]*?)\s*$/);
+		var match = source.substring(start,end).match(/^<\?(\S*)\s*([\s\S]*?)$/);
 		if(match){
 			var len = match[0].length;
 			domBuilder.processingInstruction(match[1], match[2]) ;
@@ -8612,7 +8891,13 @@ function processHeader (request, key, val) {
       } else if (typeof val[i] === 'object') {
         throw new InvalidArgumentError(`invalid ${key} header`)
       } else {
-        arr.push(`${val[i]}`)
+        // Coerce primitives (and reject unsafe coercions such as functions
+        // with a crafted toString/Symbol.toPrimitive).
+        const str = `${val[i]}`
+        if (!isValidHeaderValue(str)) {
+          throw new InvalidArgumentError(`invalid ${key} header`)
+        }
+        arr.push(str)
       }
     }
     val = arr
@@ -8623,7 +8908,12 @@ function processHeader (request, key, val) {
   } else if (val === null) {
     val = ''
   } else {
+    // Coerce primitives (and reject unsafe coercions such as functions
+    // with a crafted toString/Symbol.toPrimitive).
     val = `${val}`
+    if (!isValidHeaderValue(val)) {
+      throw new InvalidArgumentError(`invalid ${key} header`)
+    }
   }
 
   if (headerName === 'host') {
@@ -9657,8 +9947,6 @@ function defaultFactory (origin, opts) {
 
 class Agent extends DispatcherBase {
   constructor ({ factory = defaultFactory, maxRedirections = 0, connect, ...options } = {}) {
-    super()
-
     if (typeof factory !== 'function') {
       throw new InvalidArgumentError('factory must be a function.')
     }
@@ -9670,6 +9958,8 @@ class Agent extends DispatcherBase {
     if (!Number.isInteger(maxRedirections) || maxRedirections < 0) {
       throw new InvalidArgumentError('maxRedirections must be a positive number')
     }
+
+    super(options)
 
     if (connect && typeof connect !== 'function') {
       connect = { ...connect }
@@ -9995,6 +10285,7 @@ const {
   RequestContentLengthMismatchError,
   ResponseContentLengthMismatchError,
   RequestAbortedError,
+  InvalidArgumentError,
   HeadersTimeoutError,
   HeadersOverflowError,
   SocketError,
@@ -10042,6 +10333,9 @@ const EMPTY_BUF = Buffer.alloc(0)
 const FastBuffer = Buffer[Symbol.species]
 const addListener = util.addListener
 const removeAllListeners = util.removeAllListeners
+const kIdleSocketValidation = Symbol('kIdleSocketValidation')
+const kIdleSocketValidationTimeout = Symbol('kIdleSocketValidationTimeout')
+const kSocketUsed = Symbol('kSocketUsed')
 
 let extractBody
 
@@ -10264,27 +10558,69 @@ class Parser {
 
       const offset = llhttp.llhttp_get_error_pos(this.ptr) - currentBufferPtr
 
-      if (ret === constants.ERROR.PAUSED_UPGRADE) {
-        this.onUpgrade(data.slice(offset))
-      } else if (ret === constants.ERROR.PAUSED) {
-        this.paused = true
-        socket.unshift(data.slice(offset))
-      } else if (ret !== constants.ERROR.OK) {
-        const ptr = llhttp.llhttp_get_error_reason(this.ptr)
-        let message = ''
-        /* istanbul ignore else: difficult to make a test case for */
-        if (ptr) {
-          const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0)
-          message =
-            'Response does not match the HTTP/1.1 protocol (' +
-            Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
-            ')'
+      if (ret !== constants.ERROR.OK) {
+        const body = data.subarray(offset)
+
+        if (ret === constants.ERROR.PAUSED_UPGRADE) {
+          this.onUpgrade(body)
+        } else if (ret === constants.ERROR.PAUSED) {
+          this.paused = true
+          socket.unshift(body)
+        } else {
+          throw this.createError(ret, body)
         }
-        throw new HTTPParserError(message, constants.ERROR[ret], data.slice(offset))
       }
     } catch (err) {
       util.destroy(socket, err)
     }
+  }
+
+  finish () {
+    assert(currentParser === null)
+    assert(this.ptr != null)
+    assert(!this.paused)
+
+    const { llhttp } = this
+
+    let ret
+
+    try {
+      currentParser = this
+      ret = llhttp.llhttp_finish(this.ptr)
+    } finally {
+      currentParser = null
+    }
+
+    if (ret === constants.ERROR.OK) {
+      return null
+    }
+
+    if (ret === constants.ERROR.PAUSED || ret === constants.ERROR.PAUSED_UPGRADE) {
+      this.paused = true
+      return null
+    }
+
+    return this.createError(ret, EMPTY_BUF)
+  }
+
+  createError (ret, data) {
+    const { llhttp, contentLength, bytesRead } = this
+
+    if (contentLength && bytesRead !== parseInt(contentLength, 10)) {
+      return new ResponseContentLengthMismatchError()
+    }
+
+    const ptr = llhttp.llhttp_get_error_reason(this.ptr)
+    let message = ''
+    if (ptr) {
+      const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0)
+      message =
+        'Response does not match the HTTP/1.1 protocol (' +
+        Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
+        ')'
+    }
+
+    return new HTTPParserError(message, constants.ERROR[ret], data)
   }
 
   destroy () {
@@ -10311,6 +10647,11 @@ class Parser {
 
     /* istanbul ignore next: difficult to make a test case for */
     if (socket.destroyed) {
+      return -1
+    }
+
+    if (client[kRunning] === 0) {
+      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)))
       return -1
     }
 
@@ -10414,6 +10755,11 @@ class Parser {
 
     /* istanbul ignore next: difficult to make a test case for */
     if (socket.destroyed) {
+      return -1
+    }
+
+    if (client[kRunning] === 0) {
+      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)))
       return -1
     }
 
@@ -10590,6 +10936,7 @@ class Parser {
     request.onComplete(headers)
 
     client[kQueue][client[kRunningIdx]++] = null
+    socket[kSocketUsed] = true
 
     if (socket[kWriting]) {
       assert(client[kRunning] === 0)
@@ -10648,6 +10995,9 @@ async function connectH1 (client, socket) {
   socket[kWriting] = false
   socket[kReset] = false
   socket[kBlocking] = false
+  socket[kIdleSocketValidation] = 0
+  socket[kIdleSocketValidationTimeout] = null
+  socket[kSocketUsed] = false
   socket[kParser] = new Parser(client, socket, llhttpInstance)
 
   addListener(socket, 'error', function (err) {
@@ -10658,8 +11008,11 @@ async function connectH1 (client, socket) {
     // On Mac OS, we get an ECONNRESET even if there is a full body to be forwarded
     // to the user.
     if (err.code === 'ECONNRESET' && parser.statusCode && !parser.shouldKeepAlive) {
-      // We treat all incoming data so for as a valid response.
-      parser.onMessageComplete()
+      const parserErr = parser.finish()
+      if (parserErr) {
+        this[kError] = parserErr
+        this[kClient][kOnError](parserErr)
+      }
       return
     }
 
@@ -10678,8 +11031,10 @@ async function connectH1 (client, socket) {
     const parser = this[kParser]
 
     if (parser.statusCode && !parser.shouldKeepAlive) {
-      // We treat all incoming data so far as a valid response.
-      parser.onMessageComplete()
+      const parserErr = parser.finish()
+      if (parserErr) {
+        util.destroy(this, parserErr)
+      }
       return
     }
 
@@ -10689,10 +11044,11 @@ async function connectH1 (client, socket) {
     const client = this[kClient]
     const parser = this[kParser]
 
+    clearIdleSocketValidation(this)
+
     if (parser) {
       if (!this[kError] && parser.statusCode && !parser.shouldKeepAlive) {
-        // We treat all incoming data so far as a valid response.
-        parser.onMessageComplete()
+        this[kError] = parser.finish() || this[kError]
       }
 
       this[kParser].destroy()
@@ -10755,7 +11111,7 @@ async function connectH1 (client, socket) {
       return socket.destroyed
     },
     busy (request) {
-      if (socket[kWriting] || socket[kReset] || socket[kBlocking]) {
+      if (socket[kWriting] || socket[kReset] || socket[kBlocking] || socket[kIdleSocketValidation] === 1) {
         return true
       }
 
@@ -10793,6 +11149,31 @@ async function connectH1 (client, socket) {
   }
 }
 
+function clearIdleSocketValidation (socket) {
+  if (socket[kIdleSocketValidationTimeout]) {
+    clearTimeout(socket[kIdleSocketValidationTimeout])
+    socket[kIdleSocketValidationTimeout] = null
+  }
+
+  socket[kIdleSocketValidation] = 0
+}
+
+function scheduleIdleSocketValidation (client, socket) {
+  socket[kIdleSocketValidation] = 1
+  socket[kIdleSocketValidationTimeout] = setTimeout(() => {
+    socket[kIdleSocketValidationTimeout] = null
+    socket[kIdleSocketValidation] = 2
+
+    if (client[kSocket] === socket && !socket.destroyed) {
+      client[kResume]()
+    }
+  }, 0)
+  socket[kIdleSocketValidationTimeout].unref?.()
+}
+
+/**
+ * @param {import('./client.js')} client
+ */
 function resumeH1 (client) {
   const socket = client[kSocket]
 
@@ -10805,6 +11186,32 @@ function resumeH1 (client) {
     } else if (socket[kNoRef] && socket.ref) {
       socket.ref()
       socket[kNoRef] = false
+    }
+
+    if (client[kRunning] === 0 && client[kPending] > 0 && socket[kSocketUsed]) {
+      if (socket[kIdleSocketValidation] === 0) {
+        scheduleIdleSocketValidation(client, socket)
+        socket[kParser].readMore()
+        if (socket.destroyed) {
+          return
+        }
+        return
+      }
+
+      if (socket[kIdleSocketValidation] === 1) {
+        socket[kParser].readMore()
+        if (socket.destroyed) {
+          return
+        }
+        return
+      }
+    }
+
+    if (client[kRunning] === 0) {
+      socket[kParser].readMore()
+      if (socket.destroyed) {
+        return
+      }
     }
 
     if (client[kSize] === 0) {
@@ -10862,8 +11269,16 @@ function writeH1 (client, request) {
     }
     body = bodyStream.stream
     contentLength = bodyStream.length
-  } else if (util.isBlobLike(body) && request.contentType == null && body.type) {
-    headers.push('content-type', body.type)
+  } else if (util.isBlobLike(body) && request.contentType == null) {
+    const contentType = body.type
+    if (contentType) {
+      const contentTypeValue = `${contentType}`
+      if (!util.isValidHeaderValue(contentTypeValue)) {
+        util.errorRequest(client, request, new InvalidArgumentError('invalid content-type header'))
+        return false
+      }
+      headers.push('content-type', contentTypeValue)
+    }
   }
 
   if (body && typeof body.read === 'function') {
@@ -10900,6 +11315,7 @@ function writeH1 (client, request) {
   }
 
   const socket = client[kSocket]
+  clearIdleSocketValidation(socket)
 
   const abort = (err) => {
     if (request.aborted || request.completed) {
@@ -12219,9 +12635,10 @@ class Client extends DispatcherBase {
     autoSelectFamilyAttemptTimeout,
     // h2
     maxConcurrentStreams,
-    allowH2
+    allowH2,
+    webSocket
   } = {}) {
-    super()
+    super({ webSocket })
 
     if (keepAlive !== undefined) {
       throw new InvalidArgumentError('unsupported keepAlive, use pipelining=0 instead')
@@ -12753,15 +13170,24 @@ const { kDestroy, kClose, kClosed, kDestroyed, kDispatch, kInterceptors } = __nc
 const kOnDestroyed = Symbol('onDestroyed')
 const kOnClosed = Symbol('onClosed')
 const kInterceptedDispatch = Symbol('Intercepted Dispatch')
+const kWebSocketOptions = Symbol('webSocketOptions')
 
 class DispatcherBase extends Dispatcher {
-  constructor () {
+  constructor (opts) {
     super()
 
     this[kDestroyed] = false
     this[kOnDestroyed] = null
     this[kClosed] = false
     this[kOnClosed] = []
+    this[kWebSocketOptions] = opts?.webSocket ?? {}
+  }
+
+  get webSocketOptions () {
+    return {
+      maxFragments: this[kWebSocketOptions].maxFragments ?? 131072,
+      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? 128 * 1024 * 1024
+    }
   }
 
   get destroyed () {
@@ -13321,8 +13747,8 @@ const kRemoveClient = Symbol('remove client')
 const kStats = Symbol('stats')
 
 class PoolBase extends DispatcherBase {
-  constructor () {
-    super()
+  constructor (opts) {
+    super(opts)
 
     this[kQueue] = new FixedQueue()
     this[kClients] = []
@@ -13581,8 +14007,6 @@ class Pool extends PoolBase {
     allowH2,
     ...options
   } = {}) {
-    super()
-
     if (connections != null && (!Number.isFinite(connections) || connections < 0)) {
       throw new InvalidArgumentError('invalid connections')
     }
@@ -13606,6 +14030,8 @@ class Pool extends PoolBase {
         ...connect
       })
     }
+
+    super(options)
 
     this[kInterceptors] = options.interceptors?.Pool && Array.isArray(options.interceptors.Pool)
       ? options.interceptors.Pool
@@ -14325,6 +14751,28 @@ function calculateRetryAfterHeader (retryAfter) {
   return new Date(retryAfter).getTime() - current
 }
 
+function validatePartialResponseContentLength (headers, range, statusCode, retryCount) {
+  const contentLength = headers['content-length']
+  if (contentLength == null) {
+    return null
+  }
+
+  if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) {
+    return null
+  }
+
+  const length = Number(contentLength)
+  const expectedLength = range.end - range.start + 1
+  if (!Number.isFinite(length) || length !== expectedLength) {
+    return new RequestRetryError('Content-Length mismatch', statusCode, {
+      headers,
+      data: { count: retryCount }
+    })
+  }
+
+  return null
+}
+
 class RetryHandler {
   constructor (opts, handlers) {
     const { retryOptions, ...dispatchOpts } = opts
@@ -14539,6 +14987,12 @@ class RetryHandler {
         return false
       }
 
+      const contentLengthError = validatePartialResponseContentLength(headers, contentRange, statusCode, this.retryCount)
+      if (contentLengthError != null) {
+        this.abort(contentLengthError)
+        return false
+      }
+
       const { start, size, end = size - 1 } = contentRange
 
       assert(this.start === start, 'content-range mismatch')
@@ -14560,6 +15014,12 @@ class RetryHandler {
             resume,
             statusMessage
           )
+        }
+
+        const contentLengthError = validatePartialResponseContentLength(headers, range, statusCode, this.retryCount)
+        if (contentLengthError != null) {
+          this.abort(contentLengthError)
+          return false
         }
 
         const { start, size, end = size - 1 } = range
@@ -18659,32 +19119,25 @@ function parseUnparsedAttributes (unparsedAttributes, cookieAttributeList = {}) 
     // If the attribute-name case-insensitively matches the string
     // "SameSite", the user agent MUST process the cookie-av as follows:
 
-    // 1. Let enforcement be "Default".
-    let enforcement = 'Default'
-
     const attributeValueLowercase = attributeValue.toLowerCase()
-    // 2. If cookie-av's attribute-value is a case-insensitive match for
-    //    "None", set enforcement to "None".
-    if (attributeValueLowercase.includes('none')) {
-      enforcement = 'None'
-    }
 
-    // 3. If cookie-av's attribute-value is a case-insensitive match for
-    //    "Strict", set enforcement to "Strict".
-    if (attributeValueLowercase.includes('strict')) {
-      enforcement = 'Strict'
+    // 1. If cookie-av's attribute-value is a case-insensitive match for
+    //    "None", append an attribute to the cookie-attribute-list with an
+    //    attribute-name of "SameSite" and an attribute-value of "None".
+    if (attributeValueLowercase === 'none') {
+      cookieAttributeList.sameSite = 'None'
+    } else if (attributeValueLowercase === 'strict') {
+      // 2. If cookie-av's attribute-value is a case-insensitive match for
+      //    "Strict", append an attribute to the cookie-attribute-list with
+      //    an attribute-name of "SameSite" and an attribute-value of
+      //    "Strict".
+      cookieAttributeList.sameSite = 'Strict'
+    } else if (attributeValueLowercase === 'lax') {
+      // 3. If cookie-av's attribute-value is a case-insensitive match for
+      //    "Lax", append an attribute to the cookie-attribute-list with an
+      //    attribute-name of "SameSite" and an attribute-value of "Lax".
+      cookieAttributeList.sameSite = 'Lax'
     }
-
-    // 4. If cookie-av's attribute-value is a case-insensitive match for
-    //    "Lax", set enforcement to "Lax".
-    if (attributeValueLowercase.includes('lax')) {
-      enforcement = 'Lax'
-    }
-
-    // 5. Append an attribute to the cookie-attribute-list with an
-    //    attribute-name of "SameSite" and an attribute-value of
-    //    enforcement.
-    cookieAttributeList.sameSite = enforcement
   } else {
     cookieAttributeList.unparsed ??= []
 
@@ -18813,7 +19266,7 @@ function validateCookiePath (path) {
 
     if (
       code < 0x20 || // exclude CTLs (0-31)
-      code === 0x7F || // DEL
+      code > 0x7E || // exclude DEL and non-ascii
       code === 0x3B // ;
     ) {
       throw new Error('Invalid cookie path')
@@ -18822,16 +19275,80 @@ function validateCookiePath (path) {
 }
 
 /**
- * I have no idea why these values aren't allowed to be honest,
- * but Deno tests these. - Khafra
+ * <let-dig> ::= <letter> | <digit>
+ *
+ * <letter> ::= any one of the 52 alphabetic characters A through Z in
+ * upper case and a through z in lower case
+ *
+ * <digit> ::= any one of the ten digits 0 through 9r
+ *
+ * @see https://www.rfc-editor.org/rfc/rfc1034#section-3.5
+ * @param {number} code
+ */
+function isLetterOrDigit (code) {
+  return (
+    (code >= 0x30 && code <= 0x39) || // 0-9
+    (code >= 0x41 && code <= 0x5A) || // A-Z
+    (code >= 0x61 && code <= 0x7A) // a-z
+  )
+}
+
+/**
+ * Validates a cookie domain against the "preferred name syntax".
+ *
+ * <domain>      ::= <subdomain> | " "
+ * <subdomain>   ::= <label> | <subdomain> "." <label>
+ * <label>       ::= <let-dig> [ [ <ldh-str> ] <let-dig> ]
+ * <ldh-str>     ::= <let-dig-hyp> | <let-dig-hyp> <ldh-str>
+ * <let-dig-hyp> ::= <let-dig> | "-"
+ *
+ * @see https://www.rfc-editor.org/rfc/rfc1034#section-3.5
+ * @see https://www.rfc-editor.org/rfc/rfc1123#section-2.1
+ * @see https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4
  * @param {string} domain
  */
 function validateCookieDomain (domain) {
-  if (
-    domain.startsWith('-') ||
-    domain.endsWith('.') ||
-    domain.endsWith('-')
-  ) {
+  // <domain> ::= <subdomain> | " "
+  if (domain === ' ') {
+    return
+  }
+
+  if (domain.length > 255) {
+    throw new Error('Invalid cookie domain')
+  }
+
+  let labelLength = 0
+
+  for (let i = 0; i < domain.length; ++i) {
+    const code = domain.charCodeAt(i)
+
+    if (code === 0x2E) {
+      if (labelLength === 0) {
+        throw new Error('Invalid cookie domain')
+      }
+
+      if (domain.charCodeAt(i - 1) === 0x2D) { // "-"
+        throw new Error('Invalid cookie domain')
+      }
+
+      labelLength = 0
+      continue
+    }
+
+    if (labelLength === 0 && !isLetterOrDigit(code)) {
+      throw new Error('Invalid cookie domain')
+    }
+
+    if (!isLetterOrDigit(code) && code !== 0x2D) { // "-"
+      throw new Error('Invalid cookie domain')
+    }
+
+    if (++labelLength > 63) {
+      throw new Error('Invalid cookie domain')
+    }
+  }
+
+  if (labelLength === 0 || domain.charCodeAt(domain.length - 1) === 0x2D) { // "-"
     throw new Error('Invalid cookie domain')
   }
 }
@@ -18974,7 +19491,13 @@ function stringify (cookie) {
 
     const [key, ...value] = part.split('=')
 
-    out.push(`${key.trim()}=${value.join('=')}`)
+    const trimmedKey = key.trim()
+    const joinedValue = value.join('=')
+
+    validateCookieName(trimmedKey)
+    validateCookieValue(joinedValue)
+
+    out.push(`${trimmedKey}=${joinedValue}`)
   }
 
   return out.join('; ')
@@ -31361,40 +31884,35 @@ const tail = Buffer.from([0x00, 0x00, 0xff, 0xff])
 const kBuffer = Symbol('kBuffer')
 const kLength = Symbol('kLength')
 
-// Default maximum decompressed message size: 4 MB
-const kDefaultMaxDecompressedSize = 4 * 1024 * 1024
-
 class PerMessageDeflate {
   /** @type {import('node:zlib').InflateRaw} */
   #inflate
 
   #options = {}
 
-  /** @type {boolean} */
-  #aborted = false
-
-  /** @type {Function|null} */
-  #currentCallback = null
+  #maxPayloadSize = 0
 
   /**
    * @param {Map<string, string>} extensions
    */
-  constructor (extensions) {
+  constructor (extensions, options) {
     this.#options.serverNoContextTakeover = extensions.has('server_no_context_takeover')
     this.#options.serverMaxWindowBits = extensions.get('server_max_window_bits')
+
+    this.#maxPayloadSize = options.maxPayloadSize
   }
 
+  /**
+   * Decompress a compressed payload.
+   * @param {Buffer} chunk Compressed data
+   * @param {boolean} fin Final fragment flag
+   * @param {Function} callback Callback function
+   */
   decompress (chunk, fin, callback) {
     // An endpoint uses the following algorithm to decompress a message.
     // 1.  Append 4 octets of 0x00 0x00 0xff 0xff to the tail end of the
     //     payload of the message.
     // 2.  Decompress the resulting data using DEFLATE.
-
-    if (this.#aborted) {
-      callback(new MessageSizeExceededError())
-      return
-    }
-
     if (!this.#inflate) {
       let windowBits = Z_DEFAULT_WINDOWBITS
 
@@ -31417,23 +31935,12 @@ class PerMessageDeflate {
       this.#inflate[kLength] = 0
 
       this.#inflate.on('data', (data) => {
-        if (this.#aborted) {
-          return
-        }
-
         this.#inflate[kLength] += data.length
 
-        if (this.#inflate[kLength] > kDefaultMaxDecompressedSize) {
-          this.#aborted = true
+        if (this.#maxPayloadSize > 0 && this.#inflate[kLength] > this.#maxPayloadSize) {
+          callback(new MessageSizeExceededError())
           this.#inflate.removeAllListeners()
-          this.#inflate.destroy()
           this.#inflate = null
-
-          if (this.#currentCallback) {
-            const cb = this.#currentCallback
-            this.#currentCallback = null
-            cb(new MessageSizeExceededError())
-          }
           return
         }
 
@@ -31446,14 +31953,13 @@ class PerMessageDeflate {
       })
     }
 
-    this.#currentCallback = callback
     this.#inflate.write(chunk)
     if (fin) {
       this.#inflate.write(tail)
     }
 
     this.#inflate.flush(() => {
-      if (this.#aborted || !this.#inflate) {
+      if (!this.#inflate) {
         return
       }
 
@@ -31461,7 +31967,6 @@ class PerMessageDeflate {
 
       this.#inflate[kBuffer].length = 0
       this.#inflate[kLength] = 0
-      this.#currentCallback = null
 
       callback(null, full)
     })
@@ -31496,6 +32001,12 @@ const {
 const { WebsocketFrameSend } = __nccwpck_require__(2391)
 const { closeWebSocketConnection } = __nccwpck_require__(8380)
 const { PerMessageDeflate } = __nccwpck_require__(8236)
+const { MessageSizeExceededError } = __nccwpck_require__(8045)
+
+function failWebsocketConnectionWithCode (ws, code, reason) {
+  closeWebSocketConnection(ws, code, reason, Buffer.byteLength(reason))
+  failWebsocketConnection(ws, reason)
+}
 
 // This code was influenced by ws released under the MIT license.
 // Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
@@ -31504,6 +32015,7 @@ const { PerMessageDeflate } = __nccwpck_require__(8236)
 
 class ByteParser extends Writable {
   #buffers = []
+  #fragmentsBytes = 0
   #byteOffset = 0
   #loop = false
 
@@ -31515,18 +32027,27 @@ class ByteParser extends Writable {
   /** @type {Map<string, PerMessageDeflate>} */
   #extensions
 
+  /** @type {number} */
+  #maxFragments
+
+  /** @type {number} */
+  #maxPayloadSize
+
   /**
    * @param {import('./websocket').WebSocket} ws
    * @param {Map<string, string>|null} extensions
+   * @param {{ maxFragments?: number, maxPayloadSize?: number }} [options]
    */
-  constructor (ws, extensions) {
+  constructor (ws, extensions, options = {}) {
     super()
 
     this.ws = ws
     this.#extensions = extensions == null ? new Map() : extensions
+    this.#maxFragments = options.maxFragments ?? 0
+    this.#maxPayloadSize = options.maxPayloadSize ?? 0
 
     if (this.#extensions.has('permessage-deflate')) {
-      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions))
+      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions, options))
     }
   }
 
@@ -31540,6 +32061,19 @@ class ByteParser extends Writable {
     this.#loop = true
 
     this.run(callback)
+  }
+
+  #validatePayloadLength () {
+    if (
+      this.#maxPayloadSize > 0 &&
+      !isControlFrame(this.#info.opcode) &&
+      this.#info.payloadLength + this.#fragmentsBytes > this.#maxPayloadSize
+    ) {
+      failWebsocketConnectionWithCode(this.ws, 1009, 'Payload size exceeds maximum allowed size')
+      return false
+    }
+
+    return true
   }
 
   /**
@@ -31630,6 +32164,10 @@ class ByteParser extends Writable {
         if (payloadLength <= 125) {
           this.#info.payloadLength = payloadLength
           this.#state = parserStates.READ_DATA
+
+          if (!this.#validatePayloadLength()) {
+            return
+          }
         } else if (payloadLength === 126) {
           this.#state = parserStates.PAYLOADLENGTH_16
         } else if (payloadLength === 127) {
@@ -31654,6 +32192,10 @@ class ByteParser extends Writable {
 
         this.#info.payloadLength = buffer.readUInt16BE(0)
         this.#state = parserStates.READ_DATA
+
+        if (!this.#validatePayloadLength()) {
+          return
+        }
       } else if (this.#state === parserStates.PAYLOADLENGTH_64) {
         if (this.#byteOffset < 8) {
           return callback()
@@ -31676,6 +32218,10 @@ class ByteParser extends Writable {
 
         this.#info.payloadLength = lower
         this.#state = parserStates.READ_DATA
+
+        if (!this.#validatePayloadLength()) {
+          return
+        }
       } else if (this.#state === parserStates.READ_DATA) {
         if (this.#byteOffset < this.#info.payloadLength) {
           return callback()
@@ -31688,42 +32234,58 @@ class ByteParser extends Writable {
           this.#state = parserStates.INFO
         } else {
           if (!this.#info.compressed) {
-            this.#fragments.push(body)
+            if (!this.writeFragments(body)) {
+              return
+            }
+
+            if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
+              failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message)
+              return
+            }
 
             // If the frame is not fragmented, a message has been received.
             // If the frame is fragmented, it will terminate with a fin bit set
             // and an opcode of 0 (continuation), therefore we handle that when
             // parsing continuation frames, not here.
             if (!this.#info.fragmented && this.#info.fin) {
-              const fullMessage = Buffer.concat(this.#fragments)
-              websocketMessageReceived(this.ws, this.#info.binaryType, fullMessage)
-              this.#fragments.length = 0
+              websocketMessageReceived(this.ws, this.#info.binaryType, this.consumeFragments())
             }
 
             this.#state = parserStates.INFO
           } else {
-            this.#extensions.get('permessage-deflate').decompress(body, this.#info.fin, (error, data) => {
-              if (error) {
-                failWebsocketConnection(this.ws, error.message)
-                return
-              }
+            this.#extensions.get('permessage-deflate').decompress(
+              body,
+              this.#info.fin,
+              (error, data) => {
+                if (error) {
+                  const code = error instanceof MessageSizeExceededError ? 1009 : 1007
+                  failWebsocketConnectionWithCode(this.ws, code, error.message)
+                  return
+                }
 
-              this.#fragments.push(data)
+                if (!this.writeFragments(data)) {
+                  return
+                }
 
-              if (!this.#info.fin) {
-                this.#state = parserStates.INFO
+                if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
+                  failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message)
+                  return
+                }
+
+                if (!this.#info.fin) {
+                  this.#state = parserStates.INFO
+                  this.#loop = true
+                  this.run(callback)
+                  return
+                }
+
+                websocketMessageReceived(this.ws, this.#info.binaryType, this.consumeFragments())
+
                 this.#loop = true
+                this.#state = parserStates.INFO
                 this.run(callback)
-                return
               }
-
-              websocketMessageReceived(this.ws, this.#info.binaryType, Buffer.concat(this.#fragments))
-
-              this.#loop = true
-              this.#state = parserStates.INFO
-              this.#fragments.length = 0
-              this.run(callback)
-            })
+            )
 
             this.#loop = false
             break
@@ -31773,6 +32335,35 @@ class ByteParser extends Writable {
     this.#byteOffset -= n
 
     return buffer
+  }
+
+  writeFragments (fragment) {
+    if (
+      this.#maxFragments > 0 &&
+      this.#fragments.length === this.#maxFragments
+    ) {
+      failWebsocketConnectionWithCode(this.ws, 1008, 'Too many message fragments')
+      return false
+    }
+
+    this.#fragmentsBytes += fragment.length
+    this.#fragments.push(fragment)
+    return true
+  }
+
+  consumeFragments () {
+    const fragments = this.#fragments
+
+    if (fragments.length === 1) {
+      this.#fragmentsBytes = 0
+      return fragments.shift()
+    }
+
+    const output = Buffer.concat(fragments, this.#fragmentsBytes)
+    this.#fragments = []
+    this.#fragmentsBytes = 0
+
+    return output
   }
 
   parseCloseBody (data) {
@@ -32806,7 +33397,14 @@ class WebSocket extends EventTarget {
     // once this happens, the connection is open
     this[kResponse] = response
 
-    const parser = new ByteParser(this, parsedExtensions)
+    const webSocketOptions = this[kController]?.dispatcher?.webSocketOptions
+    const maxFragments = webSocketOptions?.maxFragments
+    const maxPayloadSize = webSocketOptions?.maxPayloadSize
+
+    const parser = new ByteParser(this, parsedExtensions, {
+      maxFragments,
+      maxPayloadSize
+    })
     parser.on('drain', onParserDrain)
     parser.on('error', onParserError.bind(this))
 
@@ -41060,6 +41658,27 @@ try {
             ? node.nodeValue
             : node.textContent;
         setOutput("value", value);
+        break;
+
+      case "add":
+        if (!newValueString) {
+          setFailed("'newvalue' input is required for the 'add' operation");
+          break;
+        }
+        for (const node of nodes) {
+          const wrapped = new lib.DOMParser().parseFromString(
+            `<xml-replace-action-wrapper>${newValueString}</xml-replace-action-wrapper>`
+          );
+          const newChildren = Array.from(wrapped.documentElement.childNodes);
+
+          for (const child of newChildren) {
+            node.appendChild(document.importNode(child, true));
+          }
+        }
+        external_fs_namespaceObject.writeFileSync(
+          filePath,
+          new lib/* XMLSerializer */.B().serializeToString(document)
+        );
         break;
 
       case "delete":

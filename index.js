@@ -57,6 +57,27 @@ try {
         core.setOutput("value", value);
         break;
 
+      case "add":
+        if (!newValueString) {
+          core.setFailed("'newvalue' input is required for the 'add' operation");
+          break;
+        }
+        for (const node of nodes) {
+          const wrapped = new DOMParser().parseFromString(
+            `<xml-replace-action-wrapper>${newValueString}</xml-replace-action-wrapper>`
+          );
+          const newChildren = Array.from(wrapped.documentElement.childNodes);
+
+          for (const child of newChildren) {
+            node.appendChild(document.importNode(child, true));
+          }
+        }
+        fs.writeFileSync(
+          filePath,
+          new XMLSerializer().serializeToString(document)
+        );
+        break;
+
       case "delete":
         for (const node of nodes) {
           if (node.nodeType === XML_NODETYPE.ATTRIBUTE_NODE) {
